@@ -1,0 +1,352 @@
+version: '3.9'
+
+networks:
+  metaintel:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  elasticsearch_data:
+  minio_data:
+  image_uploads:
+  laravel_storage:
+
+services:
+  # ─────────────────────────────────────────────────────────────
+  # NGINX Reverse Proxy / API Gateway
+  # ─────────────────────────────────────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: metaintel_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./infrastructure/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - laravel_storage:/var/www/storage/app/public:ro
+    depends_on:
+      - laravel-api
+      - frontend
+    networks:
+      - metaintel
+
+  # ─────────────────────────────────────────────────────────────
+  # Laravel API Backend
+  # ─────────────────────────────────────────────────────────────
+  laravel-api:
+    build:
+      context: ./laravel-api
+      dockerfile: Dockerfile
+      target: production
+    container_name: metaintel_api
+    restart: unless-stopped
+    environment:
+      APP_NAME: "MetaIntel Platform"
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_URL: ${APP_URL:-http://localhost}
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: metaintel
+      DB_USERNAME: ${DB_USERNAME:-metaintel}
+      DB_PASSWORD: ${DB_PASSWORD:-secret}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      QUEUE_CONNECTION: redis
+      CACHE_DRIVER: redis
+      SESSION_DRIVER: redis
+      FILESYSTEM_DISK: s3
+      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_BUCKET: metaintel-images
+      AWS_ENDPOINT: http://minio:9000
+      AWS_USE_PATH_STYLE_ENDPOINT: "true"
+      ELASTICSEARCH_HOST: elasticsearch
+      ELASTICSEARCH_PORT: 9200
+      METADATA_SERVICE_URL: http://metadata-service:8001
+      FORENSICS_SERVICE_URL: http://forensics-service:8002
+      GEOSPATIAL_SERVICE_URL: http://geospatial-service:8003
+    volumes:
+      - laravel_storage:/var/www/storage
+      - image_uploads:/var/www/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    networks:
+      - metaintel
+
+  # ─────────────────────────────────────────────────────────────
+  # Queue Worker (Laravel Horizon)
+  # ─────────────────────────────────────────────────────────────
+  queue-worker:
+    build:
+      context: ./laravel-api
+      dockerfile: Dockerfile
+      target: worker
+    container_name: metaintel_worker
+    restart: unless-stopped
+    command: php artisan horizon
+    environment:
+      APP_ENV: production
+      DB_HOST: postgres
+      REDIS_HOST: redis
+      METADATA_SERVICE_URL: http://metadata-service:8001
+      FORENSICS_SERVICE_URL: http://forensics-service:8002
+      GEOSPATIAL_SERVICE_URL: http://geospatial-service:8003
+    volumes:
+      - laravel_storage:/var/www/storage
+      - image_uploads:/var/www/uploads
+    depends_on:
+      - laravel-api
+      - redis
+    networks:
+      - metaintel
+
+  # ─────────────────────────────────────────────────────────────
+  # Laravel Scheduler
+  # ─────────────────────────────────────────────────────────────
+  scheduler:
+    build:
+      context: ./laravel-api
+      dockerfile: Dockerfile
+      target: worker
+    container_name: metaintel_scheduler
+    restart: unless-stopped
+    command: php artisan schedule:work
+    environment:
+      APP_ENV: production
+      DB_HOST: postgres
+      REDIS_HOST: redis
+    networks:
+      - metaintel
+
+  # ─────────────────────────────────────────────────────────────
+  # Python Metadata Extraction Microservice
+  # ─────────────────────────────────────────────────────────────
+  metadata-service:
+    build:
+      context: ./python-services/metadata-service
+      dockerfile: Dockerfile
+    container_name: metaintel_metadata
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      EXIFTOOL_PATH: /usr/bin/exiftool
+      LOG_LEVEL: INFO
+      WORKERS: 4
+    volumes:
+      - image_uploads:/app/uploads:ro
+    networks:
+      - metaintel
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ─────────────────────────────────────────────────────────────
+  # Python AI Forensics Microservice
+  # ─────────────────────────────────────────────────────────────
+  forensics-service:
+    build:
+      context: ./python-services/forensics-service
+      dockerfile: Dockerfile
+    container_name: metaintel_forensics
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    environment:
+      LOG_LEVEL: INFO
+      WORKERS: 2
+      MODEL_PATH: /app/models
+      ENABLE_GPU: ${ENABLE_GPU:-false}
+    volumes:
+      - image_uploads:/app/uploads:ro
+      - ./python-services/forensics-service/models:/app/models
+    networks:
+      - metaintel
+    # Uncomment for GPU support:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+
+  # ─────────────────────────────────────────────────────────────
+  # Python Geospatial Microservice
+  # ─────────────────────────────────────────────────────────────
+  geospatial-service:
+    build:
+      context: ./python-services/geospatial-service
+      dockerfile: Dockerfile
+    container_name: metaintel_geospatial
+    restart: unless-stopped
+    ports:
+      - "8003:8003"
+    environment:
+      LOG_LEVEL: INFO
+      NOMINATIM_USER_AGENT: "MetaIntel/1.0"
+      GEOCODING_PROVIDER: ${GEOCODING_PROVIDER:-nominatim}
+      MAPBOX_TOKEN: ${MAPBOX_TOKEN:-}
+    networks:
+      - metaintel
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ─────────────────────────────────────────────────────────────
+  # React Frontend
+  # ─────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${APP_URL:-http://localhost}/api
+        NEXT_PUBLIC_MAPBOX_TOKEN: ${MAPBOX_TOKEN:-}
+    container_name: metaintel_frontend
+    restart: unless-stopped
+    networks:
+      - metaintel
+
+  # ─────────────────────────────────────────────────────────────
+  # PostgreSQL Database
+  # ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: metaintel_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: metaintel
+      POSTGRES_USER: ${DB_USERNAME:-metaintel}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secret}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    networks:
+      - metaintel
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-metaintel} -d metaintel"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─────────────────────────────────────────────────────────────
+  # Redis (Queue + Cache)
+  # ─────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: metaintel_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redissecret}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - metaintel
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redissecret}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ─────────────────────────────────────────────────────────────
+  # Elasticsearch (Search + Indexing)
+  # ─────────────────────────────────────────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+    container_name: metaintel_elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - metaintel
+
+  # ─────────────────────────────────────────────────────────────
+  # MinIO (S3-Compatible Object Storage)
+  # ─────────────────────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: metaintel_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - metaintel
+    healthcheck:
+      test: ["CMD", "mc", "--version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ─────────────────────────────────────────────────────────────
+  # MinIO Bucket Setup (init container)
+  # ─────────────────────────────────────────────────────────────
+  minio-setup:
+    image: minio/mc:latest
+    container_name: metaintel_minio_setup
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY:-minioadmin} ${MINIO_SECRET_KEY:-minioadmin};
+      mc mb --ignore-existing local/metaintel-images;
+      mc mb --ignore-existing local/metaintel-reports;
+      mc mb --ignore-existing local/metaintel-exports;
+      mc anonymous set download local/metaintel-images;
+      exit 0;
+      "
+    networks:
+      - metaintel
+
+  # ─────────────────────────────────────────────────────────────
+  # Kibana (Elasticsearch Dashboard - optional)
+  # ─────────────────────────────────────────────────────────────
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.12.0
+    container_name: metaintel_kibana
+    restart: unless-stopped
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    networks:
+      - metaintel
+    profiles:
+      - monitoring

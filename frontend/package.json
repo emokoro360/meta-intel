@@ -1,0 +1,38 @@
+{
+  "name": "metaintel-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev":   "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "lint":  "next lint"
+  },
+  "dependencies": {
+    "next": "^14.2.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "lucide-react": "^0.383.0",
+    "leaflet": "^1.9.4",
+    "react-leaflet": "^4.2.1",
+    "recharts": "^2.12.3",
+    "swr": "^2.2.5",
+    "zustand": "^4.5.2",
+    "axios": "^1.6.8",
+    "date-fns": "^3.6.0",
+    "react-dropzone": "^14.2.3",
+    "react-hot-toast": "^2.4.1",
+    "clsx": "^2.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@types/node": "^20.0.0",
+    "@types/leaflet": "^1.9.8",
+    "typescript": "^5.4.0",
+    "tailwindcss": "^3.4.3",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "eslint": "^8.57.0",
+    "eslint-config-next": "^14.2.0"
+  }
+}
