@@ -1,5 +1,3 @@
-version: '3.9'
-
 networks:
   metaintel:
     driver: bridge
@@ -36,8 +34,8 @@ services:
   # ─────────────────────────────────────────────────────────────
   laravel-api:
     build:
-      context: ./laravel-api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./laravel-api/Dockerfile
       target: production
     container_name: metaintel_api
     restart: unless-stopped
@@ -87,8 +85,8 @@ services:
   # ─────────────────────────────────────────────────────────────
   queue-worker:
     build:
-      context: ./laravel-api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./laravel-api/Dockerfile
       target: worker
     container_name: metaintel_worker
     restart: unless-stopped
@@ -114,8 +112,8 @@ services:
   # ─────────────────────────────────────────────────────────────
   scheduler:
     build:
-      context: ./laravel-api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./laravel-api/Dockerfile
       target: worker
     container_name: metaintel_scheduler
     restart: unless-stopped
