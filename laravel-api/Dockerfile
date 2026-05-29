@@ -14,10 +14,10 @@ COPY --from=composer:2.7 /usr/bin/composer /usr/bin/composer
 
 WORKDIR /var/www
 
-COPY composer.json ./
+COPY laravel-api/composer.json ./
 RUN composer install --no-scripts --no-autoloader --no-dev --prefer-dist
 
-COPY . .
+COPY laravel-api/ .
 RUN composer dump-autoload --optimize \
     && chown -R www-data:www-data /var/www/storage /var/www/bootstrap/cache
 
